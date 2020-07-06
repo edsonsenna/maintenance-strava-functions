@@ -1,5 +1,6 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
+import * as axios from 'axios';
 import { PubSub } from '@google-cloud/pubsub';
 
 import { Maintenance } from './models/maintenance';
@@ -71,8 +72,129 @@ export const webhook = functions.https.onRequest(async (req, res) => {
 });
 
 export const activityTopic = functions.pubsub.topic('activities-changes').onPublish(async (message, context) => {
-    const messageBody = message.data ? Buffer.from(message.data, 'base64').toString() : null;
-    await admin.database().ref('/messages').push({original: messageBody});
+    const stravaActivity = message.data ? JSON.parse(Buffer.from(message.data, 'base64').toString()) : null;
+    
+    if(stravaActivity) {
+
+        const userId = stravaActivity.owner_id;
+        const activityId = stravaActivity.object_id;
+
+        const user:any = await admin.firestore()
+            .collection('users')
+            .doc(`${userId}`)
+            .get()
+            .then((doc) => 
+                    doc.exists 
+                        ? doc.data() 
+                        : null)
+            .catch(err => {
+                console.log('Erro ao buscar usuario ', err);
+                return null;
+            });
+
+        console.log(userId);
+        console.log(user['ms-token']);
+
+        if(user) {
+            const authToken = user['ms-token'];
+            const refToken = user['ms-ref-token'];
+
+            let distance = 0;
+            let equipmentId = null;
+
+            if(authToken) {
+
+                try {
+
+                    const config = {
+                        headers: { Authorization: `Bearer ${authToken}` }
+                    };
+
+                    console.log('On Try', authToken);
+
+                    await axios.default
+                        .get(`https://www.strava.com/api/v3/activities/${activityId}?include_all_efforts=true`, config)
+                        .then(async (response) => {
+                            distance = response.data.distance;
+                            equipmentId = response.data.gear_id;
+                            console.log(response.data.distance);
+                            await admin.database().ref('/messages').push({activity: response.data});
+                        });
+
+                } catch (e){
+
+                    console.log('On Catch', e);
+
+                    await admin.database().ref('/messages').push({errorAuth: e});
+
+                    if(refToken) {
+
+                        const clientId = "client_id=33524";
+                        const clientSecret = "client_secret=4417fb89842153873e3a17c8c474b39454ecd272";
+                        const grantType = "grant_type=refresh_token";
+                        const refreshToken = `refresh_token=${refToken}`;
+
+                        
+                        try {
+
+                            await axios.default
+                                .post(`https://www.strava.com/api/v3/oauth/token?${clientId}&${clientSecret}&${grantType}&${refreshToken}`)
+                                .then(async (refresh) => {
+                                    await admin.database().ref('/messages').push({refresh});
+                                }).catch(async (error) => {
+                                    await admin.database().ref('/messages').push({refreshError: error});
+                                })
+
+                        } catch (ex) {
+                            await admin.database().ref('/messages').push({errorRef: ex});
+                        }
+                    }
+                }
+
+                const collection = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances');
+
+                await collection.where('equipmentId', '==', `${equipmentId}`).get().then(async response => {
+                    const batch = admin.firestore().batch();
+                    for(let doc of response.docs) {
+                        const docRef = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances').doc(doc.id)
+                        let docDistance = 0;
+                        await docRef.get().then(docD => {
+                            if(docD.exists) {
+                                const docData = docD.data() || null;
+                                if(docData) {
+                                    console.log("Getting distance", docData['value'] + distance);
+                                    docDistance = docData['value'] + distance;
+                                }
+                            }
+                        }).catch(error => console.log(error));
+                        console.log("Batch update", docDistance);
+                        batch.update(docRef, {value: docDistance});
+                    }
+                    // response.docs.forEach((doc) => {
+                    //     console.log("Updating ", doc.id);
+                    //     const docRef = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances').doc(doc.id)
+                    //     let docDistance = 0;
+                    //     docRef.get().then(docD => {
+                    //         if(docD.exists) {
+                    //             const docData = docD.data() || null;
+                    //             if(docData) {
+                    //                 console.log("Getting distance", docData['value'] + distance);
+                    //                 docDistance = docData['value'] + distance;
+                    //             }
+                    //         }
+                    //     }).catch(error => console.log(error));
+                    //     console.log("Batch update", docDistance);
+                    //     batch.update(docRef, {value: docDistance});
+                    // })
+                    batch.commit().then(() => {
+                        console.log(`updated all documents inside users`)
+                    }).catch(error => console.log(error));
+                }).catch(error => console.log(error))
+            }
+
+        }
+    
+    }
 })
 
 export const findUserById = functions.https.onRequest(async (req, res) => {
