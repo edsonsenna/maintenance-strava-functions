@@ -96,22 +96,77 @@ export const activityTopic = functions.pubsub.topic('activities-changes').onPubl
         console.log(user['ms-token']);
 
         if(user) {
-            const authToken = user['ms-token'];
+            let authToken = user['ms-token'];
             const refToken = user['ms-ref-token'];
 
             let distance = 0;
             let equipmentId = null;
+            let hasInvalidToken = false;
+
+            try {
+
+                if(authToken) {
+                    const config = {
+                        headers: { Authorization: `Bearer ${authToken}` }
+                    };
+    
+                    console.log('On Try', authToken);
+    
+                    await axios.default
+                        .get(`https://www.strava.com/api/v3/activities/${activityId}?include_all_efforts=true`, config)
+                        .then(async (response) => {
+                            distance = response.data.distance;
+                            equipmentId = response.data.gear_id;
+                            console.log(response.data.distance);
+                            await admin.database().ref('/messages').push({activity: response.data});
+                        });
+                } else {
+                    hasInvalidToken = true;
+                }
+
+            } catch (e){
+                hasInvalidToken = true;
+                authToken = null;
+            }
+
+            if(hasInvalidToken && refToken) {
+                try {
+
+                    const clientId = "client_id=33524";
+                    const clientSecret = "client_secret=4417fb89842153873e3a17c8c474b39454ecd272";
+                    const grantType = "grant_type=refresh_token";
+                    const refreshToken = `refresh_token=${refToken}`;
+    
+                    await axios.default
+                            .post(`https://www.strava.com/api/v3/oauth/token?${clientId}&${clientSecret}&${grantType}&${refreshToken}`)
+                            .then(async (refresh) => {
+                                const data = refresh.data;
+                                await admin.firestore()
+                                    .collection('users')
+                                    .doc(`${userId}`)
+                                    .update({
+                                        "ms-token": data.access_token,
+                                        "ms-ref-token": data.refresh_token,
+                                        "ms-exp-data": data.expires_at
+                                    });
+                                authToken = data.access_token;
+                            }).catch(async (error) => {
+                                await admin.database().ref('/messages').push({refreshError: error});
+                            })
+                } catch (e) {
+                    await admin.database().ref('/messages').push({refError: 'Error on get ref token'});
+                }
+            }
 
             if(authToken) {
 
                 try {
-
                     const config = {
                         headers: { Authorization: `Bearer ${authToken}` }
                     };
-
+    
                     console.log('On Try', authToken);
-
+    
                     await axios.default
                         .get(`https://www.strava.com/api/v3/activities/${activityId}?include_all_efforts=true`, config)
                         .then(async (response) => {
@@ -121,77 +176,35 @@ export const activityTopic = functions.pubsub.topic('activities-changes').onPubl
                             await admin.database().ref('/messages').push({activity: response.data});
                         });
 
-                } catch (e){
+                    const collection = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances');
 
-                    console.log('On Catch', e);
-
-                    await admin.database().ref('/messages').push({errorAuth: e});
-
-                    if(refToken) {
-
-                        const clientId = "client_id=33524";
-                        const clientSecret = "client_secret=4417fb89842153873e3a17c8c474b39454ecd272";
-                        const grantType = "grant_type=refresh_token";
-                        const refreshToken = `refresh_token=${refToken}`;
-
-                        
-                        try {
-
-                            await axios.default
-                                .post(`https://www.strava.com/api/v3/oauth/token?${clientId}&${clientSecret}&${grantType}&${refreshToken}`)
-                                .then(async (refresh) => {
-                                    await admin.database().ref('/messages').push({refresh});
-                                }).catch(async (error) => {
-                                    await admin.database().ref('/messages').push({refreshError: error});
-                                })
-
-                        } catch (ex) {
-                            await admin.database().ref('/messages').push({errorRef: ex});
-                        }
-                    }
-                }
-
-                const collection = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances');
-
-                await collection.where('equipmentId', '==', `${equipmentId}`).get().then(async response => {
-                    const batch = admin.firestore().batch();
-                    for(let doc of response.docs) {
-                        const docRef = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances').doc(doc.id)
-                        let docDistance = 0;
-                        await docRef.get().then(docD => {
-                            if(docD.exists) {
-                                const docData = docD.data() || null;
-                                if(docData) {
-                                    console.log("Getting distance", docData['value'] + distance);
-                                    docDistance = docData['value'] + distance;
+                    await collection.where('equipmentId', '==', `${equipmentId}`).get().then(async response => {
+                        const batch = admin.firestore().batch();
+                        for(let doc of response.docs) {
+                            const docRef = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances').doc(doc.id)
+                            let docDistance = 0;
+                            await docRef.get().then(docD => {
+                                if(docD.exists) {
+                                    const docData = docD.data() || null;
+                                    if(docData) {
+                                        console.log("Getting distance", docData['value'] + distance);
+                                        docDistance = docData['value'] + distance;
+                                    }
                                 }
-                            }
+                            }).catch(error => console.log(error));
+                            console.log("Batch update", docDistance);
+                            batch.update(docRef, {value: docDistance});
+                        }
+                        batch.commit().then(() => {
+                            console.log(`updated all documents inside users`)
                         }).catch(error => console.log(error));
-                        console.log("Batch update", docDistance);
-                        batch.update(docRef, {value: docDistance});
-                    }
-                    // response.docs.forEach((doc) => {
-                    //     console.log("Updating ", doc.id);
-                    //     const docRef = admin.firestore().collection('users').doc(`${userId}`).collection('maintenances').doc(doc.id)
-                    //     let docDistance = 0;
-                    //     docRef.get().then(docD => {
-                    //         if(docD.exists) {
-                    //             const docData = docD.data() || null;
-                    //             if(docData) {
-                    //                 console.log("Getting distance", docData['value'] + distance);
-                    //                 docDistance = docData['value'] + distance;
-                    //             }
-                    //         }
-                    //     }).catch(error => console.log(error));
-                    //     console.log("Batch update", docDistance);
-                    //     batch.update(docRef, {value: docDistance});
-                    // })
-                    batch.commit().then(() => {
-                        console.log(`updated all documents inside users`)
-                    }).catch(error => console.log(error));
-                }).catch(error => console.log(error))
-            }
-
+                    }).catch(error => console.log(error))
+                } catch (e) {
+                    await admin.database().ref('/logs').push({refError: 'Error on get activity'});
+                }
+                 
+                
+            } 
         }
     
     }
