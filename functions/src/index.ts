@@ -2,8 +2,10 @@ import * as functions from "firebase-functions";
 import * as admin from "firebase-admin";
 import * as axios from "axios";
 import * as dotenv from "dotenv";
+import * as nodemailer from "nodemailer";
 import { PubSub } from "@google-cloud/pubsub";
 import { Maintenance } from "./maintenance";
+import { ActivityInfo } from "./activityInfo";
 
 dotenv.config();
 admin.initializeApp();
@@ -18,20 +20,36 @@ const verifyStravaToken = `${process.env.VERIFY_STRAVA_TOKEN}`;
 const activitiesTopic = `${
   process.env.ACTIVITIES_TOPIC || "activities-changes"
 }`;
+const processedActivityTopic = `${
+  process.env.PROCESSED_ACTIVITY_TOPIC || "processed-activity"
+}`;
+const mailsTopic = `${process.env.MAILS_TOPIC || "mails-maintenances"}`;
+const mailAccount = `${process.env.MAIL_ACCOUNT}`;
+const mailPassowrd = `${process.env.MAIL_PASSWORD}`;
 
-function publishMessage(message: String) {
+function publishMessage(message: string, topic: string) {
   const dataBuffer = Buffer.from(message);
   pubSubClient
-    .topic(activitiesTopic)
+    .topic(topic)
     .publish(dataBuffer)
     .catch((error) => console.log(error));
+}
+
+function isTokenValid(expiresIn: number) {
+  const expDateMs = expiresIn || null;
+  if (expDateMs) {
+    const expDateString = Number(`${expDateMs}`.padEnd(13, "0"));
+    const expDate = new Date(expDateString);
+    return expDate.getTime() > Date.now();
+  }
+  return false;
 }
 
 export const webhook = functions.https.onRequest(async (req, res) => {
   if (req.method === "POST") {
     const stravaActivity = req.body;
     if (stravaActivity.aspect_type === "create") {
-      publishMessage(JSON.stringify({ ...req.body }));
+      publishMessage(JSON.stringify({ ...req.body }), activitiesTopic);
     }
     res.status(200).send("EVENT_RECEIVED");
   }
@@ -73,37 +91,17 @@ export const activityTopic = functions.pubsub
       if (user) {
         let authToken = user["ms-token"];
         const refToken = user["ms-ref-token"];
+        const expiresIn = user["ms-exp-date"];
+        const userMail = user["mail"] || null;
 
         let distance = 0;
         let movingTime = 0;
         let equipmentId = null;
         let equipmentName: string = "";
-        let hasInvalidToken = false;
-
-        try {
-          if (authToken) {
-            const config = {
-              headers: { Authorization: `Bearer ${authToken}` },
-            };
-
-            await axios.default
-              .get(
-                `https://www.strava.com/api/v3/activities/${activityId}?include_all_efforts=true`,
-                config
-              )
-              .then(async (response) => {
-                distance = response.data.distance;
-                equipmentId = response.data.gear_id;
-              });
-          } else {
-            hasInvalidToken = true;
-          }
-        } catch (e) {
-          hasInvalidToken = true;
-          authToken = null;
-        }
+        let hasInvalidToken = isTokenValid(Number(expiresIn));
 
         if (hasInvalidToken && refToken) {
+          authToken = null;
           try {
             const clientId = `client_id=${stravaClientId}`;
             const clientSecret = `client_secret=${stravaClientSecret}`;
@@ -165,6 +163,18 @@ export const activityTopic = functions.pubsub
                 distance = response.data.distance || null;
                 equipmentId = response.data.gear_id || null;
                 equipmentName = response.data.gear.name || null;
+                const activityObject = {
+                  userId,
+                  userMail,
+                  movingTime,
+                  distance,
+                  equipmentId,
+                  equipmentName,
+                };
+                publishMessage(
+                  JSON.stringify(activityObject),
+                  processedActivityTopic
+                );
               })
               .catch(async (error) => {
                 await admin
@@ -177,94 +187,6 @@ export const activityTopic = functions.pubsub
                   });
               });
 
-            const collection = admin
-              .firestore()
-              .collection(usersCollection)
-              .doc(`${userId}`)
-              .collection(maintenanceCollection);
-
-            await collection
-              .where("equipmentId", "==", `${equipmentId}`)
-              .get()
-              .then(async (response) => {
-                const batch = admin.firestore().batch();
-                for (const doc of response.docs) {
-                  const docRef = admin
-                    .firestore()
-                    .collection(usersCollection)
-                    .doc(`${userId}`)
-                    .collection(maintenanceCollection)
-                    .doc(doc.id);
-                  let maintenanceData: Maintenance | any =  null;
-                  await docRef
-                    .get()
-                    .then((maintenanceDoc) => {
-                      if (maintenanceDoc.exists) {
-                        const maintenance: Maintenance =
-                          JSON.parse(JSON.stringify(maintenanceDoc.data())) ||
-                          null;
-                        if (maintenance) {
-                          if (!equipmentName.length) {
-                            equipmentName = maintenance.equipmentName;
-                          }
-                          if (maintenance.type === "distance") {
-                            maintenance.value += distance;
-                            maintenance.isValid =
-                              maintenance.value < maintenance.goal;
-                          } else if (maintenance.type === "date") {
-                            maintenance.isValid =
-                              Date.now() < new Date(maintenance.goal).getTime();
-                          } else if (maintenance.type === "hours") {
-                            maintenance.value += movingTime;
-                            maintenance.isValid =
-                              maintenance.value < maintenance.goal;
-                          }
-                          maintenanceData = maintenance;
-                        }
-                      }
-                    })
-                    .catch(
-                      async (error) =>
-                        await admin
-                          .firestore()
-                          .collection(usersCollection)
-                          .doc(`${userId}`)
-                          .collection(logCollection)
-                          .add({
-                            error,
-                          })
-                    );
-                  if (maintenanceData) {
-                    batch.update(docRef, {
-                      value: maintenanceData.value,
-                      equipmentName: maintenanceData.equipmentName,
-                      isValid: maintenanceData.isValid,
-                    });
-                  }
-                }
-                batch.commit().catch(
-                  async (error) =>
-                    await admin
-                      .firestore()
-                      .collection(usersCollection)
-                      .doc(`${userId}`)
-                      .collection(logCollection)
-                      .add({
-                        error,
-                      })
-                );
-              })
-              .catch(
-                async (error) =>
-                  await admin
-                    .firestore()
-                    .collection(usersCollection)
-                    .doc(`${userId}`)
-                    .collection(logCollection)
-                    .add({
-                      error,
-                    })
-              );
           } catch (error) {
             await admin
               .firestore()
@@ -278,4 +200,139 @@ export const activityTopic = functions.pubsub
         }
       }
     }
+  });
+
+export const processActivityTopic = functions.pubsub
+  .topic(processedActivityTopic)
+  .onPublish(async (message, context) => {
+    const activityInfo: ActivityInfo = message.data
+      ? JSON.parse(Buffer.from(message.data, "base64").toString())
+      : null;
+
+    if (activityInfo?.userId) {
+      const collection = admin
+        .firestore()
+        .collection(usersCollection)
+        .doc(`${activityInfo.userId}`)
+        .collection(maintenanceCollection);
+
+      await collection
+        .where("equipmentId", "==", `${activityInfo.equipmentId}`)
+        .get()
+        .then(async (response) => {
+          const batch = admin.firestore().batch();
+          for (const doc of response.docs) {
+            const docRef = admin
+              .firestore()
+              .collection(usersCollection)
+              .doc(`${activityInfo.userId}`)
+              .collection(maintenanceCollection)
+              .doc(doc.id);
+            let maintenanceData: Maintenance | any = null;
+            await docRef
+              .get()
+              .then((maintenanceDoc) => {
+                if (maintenanceDoc.exists) {
+                  const maintenance: Maintenance =
+                    JSON.parse(JSON.stringify(maintenanceDoc.data())) || null;
+                  if (maintenance) {
+                    if (!activityInfo.equipmentName.length) {
+                      activityInfo.equipmentName = maintenance.equipmentName;
+                    }
+                    if (maintenance.type === "distance") {
+                      maintenance.value += activityInfo.distance;
+                      maintenance.isValid =
+                        maintenance.value < maintenance.goal;
+                    } else if (maintenance.type === "date") {
+                      maintenance.isValid =
+                        Date.now() < new Date(maintenance.goal).getTime();
+                    } else if (maintenance.type === "hours") {
+                      maintenance.value += activityInfo.movingTime;
+                      maintenance.isValid =
+                        maintenance.value < maintenance.goal;
+                    }
+                    if (!maintenance.isValid) {
+                      publishMessage(
+                        JSON.stringify({...maintenance, userMail: activityInfo.userMail}),
+                        mailsTopic
+                      );
+                    }
+                    maintenanceData = maintenance;
+                  }
+                }
+              })
+              .catch(
+                async (error) =>
+                  await admin
+                    .firestore()
+                    .collection(usersCollection)
+                    .doc(`${activityInfo.userId}`)
+                    .collection(logCollection)
+                    .add({
+                      error,
+                    })
+              );
+            if (maintenanceData) {
+              batch.update(docRef, {
+                value: maintenanceData.value,
+                equipmentName: maintenanceData.equipmentName,
+                isValid: maintenanceData.isValid,
+              });
+            }
+          }
+          batch.commit().catch(
+            async (error) =>
+              await admin
+                .firestore()
+                .collection(usersCollection)
+                .doc(`${activityInfo.userId}`)
+                .collection(logCollection)
+                .add({
+                  error,
+                })
+          );
+        })
+        .catch(
+          async (error) =>
+            await admin
+              .firestore()
+              .collection(usersCollection)
+              .doc(`${activityInfo.userId}`)
+              .collection(logCollection)
+              .add({
+                error,
+              })
+        );
+    }
+  });
+
+export const mailTopic = functions.pubsub
+  .topic(mailsTopic)
+  .onPublish(async (message, context) => {
+
+    const mailInfo = message.data
+      ? JSON.parse(Buffer.from(message.data, "base64").toString())
+      : null;
+
+    if(mailInfo?.userMail) {
+      const transporter = nodemailer.createTransport({
+        host: 'smtp.gmail.com',
+        port: 587,
+        secure: false,
+        auth: {
+          user: mailAccount,
+          pass: mailPassowrd
+        },
+      });
+  
+      const info = await transporter.sendMail({
+        from:'"Foo bar" <foo@mail.com>',
+        to: `${mailInfo.userMail}`,
+        subject: "Manutenção Vencida",
+        html: `<b>Olá</b>, ${mailInfo.userMail}!\n A manutenção ${mailInfo?.maintenace?.name} - ${mailInfo?.maintenance?.equipmentName} atingiu o limite definido.\n Acesso a sua conta e verifique.`,
+      });
+  
+      console.log(`Message sent ${info.messageId}`);
+    }
+
   });
