@@ -4,6 +4,7 @@ import * as axios from "axios";
 import * as dotenv from "dotenv";
 import * as nodemailer from "nodemailer";
 import { PubSub } from "@google-cloud/pubsub";
+
 import { Maintenance } from "./maintenance";
 import { ActivityInfo } from "./activityInfo";
 
@@ -326,10 +327,10 @@ export const mailTopic = functions.pubsub
       });
   
       const info = await transporter.sendMail({
-        from:'"Foo bar" <foo@mail.com>',
+        from:'"Manutenções Strava" <esjtechdev@mail.com>',
         to: `${mailInfo.userMail}`,
         subject: "Manutenção Vencida",
-        html: `<b>Olá</b>, ${mailInfo.userMail}!\n A manutenção ${mailInfo?.maintenace?.name} - ${mailInfo?.maintenance?.equipmentName} atingiu o limite definido.\n Acesso a sua conta e verifique.`,
+        html: `<p>Olá, ${mailInfo.userMail}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
       });
   
       console.log(`Message sent ${info.messageId}`);
