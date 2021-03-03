@@ -258,7 +258,7 @@ export const processActivityTopic = functions.pubsub
                     }
                     if (!maintenance.isValid) {
                       publishMessage(
-                        JSON.stringify({...maintenance, userMail: activityInfo.userEmail}),
+                        JSON.stringify({...maintenance, userEmail: activityInfo.userEmail}),
                         mailsTopic
                       );
                     }
@@ -334,7 +334,7 @@ export const mailTopic = functions.pubsub
         from:'"Manutenções Strava" <esjtechdev@mail.com>',
         to: `${mailInfo.userMail}`,
         subject: "Manutenção Vencida",
-        html: `<p>Olá, ${mailInfo.userMail}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
+        html: `<p>Olá, ${mailInfo.userEmail}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
       });
   
       console.log(`Message sent ${info.messageId}`);
