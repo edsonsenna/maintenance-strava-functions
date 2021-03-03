@@ -1,6 +1,6 @@
 export interface ActivityInfo {
     userId: number;
-    userMail: string;
+    userEmail: string;
     movingTime: number;
     distance: number;
     equipmentId: number;
