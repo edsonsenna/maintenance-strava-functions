@@ -5,7 +5,7 @@ export interface User {
     created?: Date;
     update?: Date;
     email?: String;
-    fullname?: String;
+    name?: String;
     birthdate?: Date;
     expirationDate?: Number;
     refreshToken?: String;

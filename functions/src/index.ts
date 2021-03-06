@@ -6,7 +6,7 @@ import * as nodemailer from "nodemailer";
 import { PubSub } from "@google-cloud/pubsub";
 
 import { Maintenance } from "./maintenance";
-import { ActivityInfo } from "./activityInfo";
+import { ActivityInfo } from "./interfaces/activityInfo";
 import { User } from "./interfaces/user";
 
 dotenv.config();
@@ -95,6 +95,7 @@ export const activityTopic = functions.pubsub
         const refToken = user.refreshToken;
         const expiresIn = user.expirationDate
         const userEmail = user.email;
+        const userName = user.name;
 
         let distance = 0;
         let movingTime = 0;
@@ -170,6 +171,7 @@ export const activityTopic = functions.pubsub
                 equipmentName = response.data.gear.name || null;
                 const activityObject = {
                   userId,
+                  userName,
                   userEmail,
                   movingTime,
                   distance,
@@ -258,7 +260,7 @@ export const processActivityTopic = functions.pubsub
                     }
                     if (!maintenance.isValid) {
                       publishMessage(
-                        JSON.stringify({...maintenance, userEmail: activityInfo.userEmail}),
+                        JSON.stringify({...maintenance, userName: activityInfo.userName, userEmail: activityInfo.userEmail}),
                         mailsTopic
                       );
                     }
@@ -334,7 +336,7 @@ export const mailTopic = functions.pubsub
         from:'"Manutenções Strava" <esjtechdev@mail.com>',
         to: `${mailInfo.userMail}`,
         subject: "Manutenção Vencida",
-        html: `<p>Olá, ${mailInfo.userEmail}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
+        html: `<p>Olá, ${mailInfo.userName}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
       });
   
       console.log(`Message sent ${info.messageId}`);
