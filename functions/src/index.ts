@@ -6,7 +6,8 @@ import * as nodemailer from "nodemailer";
 import { PubSub } from "@google-cloud/pubsub";
 
 import { Maintenance } from "./maintenance";
-import { ActivityInfo } from "./activityInfo";
+import { ActivityInfo } from "./interfaces/activityInfo";
+import { User } from "./interfaces/user";
 
 dotenv.config();
 admin.initializeApp();
@@ -79,21 +80,22 @@ export const activityTopic = functions.pubsub
       const userId = stravaActivity.owner_id;
       const activityId = stravaActivity.object_id;
 
-      const user: any = await admin
+      const user: User = await admin
         .firestore()
         .collection(usersCollection)
         .doc(`${userId}`)
         .get()
-        .then((doc) => (doc.exists ? doc.data() : null))
-        .catch((err) => {
-          return null;
+        .then((doc): User => (doc.data() ?? {}))
+        .catch(() => {
+          return {};
         });
 
       if (user) {
-        let authToken = user["ms-token"];
-        const refToken = user["ms-ref-token"];
-        const expiresIn = user["ms-exp-date"];
-        const userMail = user["mail"] || null;
+        let authToken = user.token;
+        const refToken = user.refreshToken;
+        const expiresIn = user.expirationDate
+        const userEmail = user.email;
+        const userName = user.name;
 
         let distance = 0;
         let movingTime = 0;
@@ -102,7 +104,7 @@ export const activityTopic = functions.pubsub
         let hasInvalidToken = isTokenValid(Number(expiresIn));
 
         if (hasInvalidToken && refToken) {
-          authToken = null;
+          authToken = undefined;
           try {
             const clientId = `client_id=${stravaClientId}`;
             const clientSecret = `client_secret=${stravaClientSecret}`;
@@ -115,16 +117,19 @@ export const activityTopic = functions.pubsub
               )
               .then(async (refresh) => {
                 const data = refresh.data;
+                const updatedUser: User = {
+                  ...user,
+                  token: data.access_token ?? '',
+                  refreshToken: data.refresh_token ?? '',
+                  expirationDate: data.expires_at ?? '',
+                };
+                console.log(updatedUser);
                 await admin
                   .firestore()
                   .collection(usersCollection)
                   .doc(`${userId}`)
-                  .update({
-                    "ms-token": data.access_token,
-                    "ms-ref-token": data.refresh_token,
-                    "ms-exp-date": data.expires_at,
-                  });
-                authToken = data.access_token;
+                  .update({...updatedUser});
+                authToken = updatedUser.token;
               })
               .catch(async (error) => {
                 await admin
@@ -166,7 +171,8 @@ export const activityTopic = functions.pubsub
                 equipmentName = response.data.gear.name || null;
                 const activityObject = {
                   userId,
-                  userMail,
+                  userName,
+                  userEmail,
                   movingTime,
                   distance,
                   equipmentId,
@@ -184,7 +190,7 @@ export const activityTopic = functions.pubsub
                   .doc(`${userId}`)
                   .collection(logCollection)
                   .add({
-                    error,
+                    error: `error-${JSON.stringify(error)},`
                   });
               });
 
@@ -195,7 +201,7 @@ export const activityTopic = functions.pubsub
               .doc(`${userId}`)
               .collection(logCollection)
               .add({
-                error,
+                error: `error-${JSON.stringify(error)},`
               });
           }
         }
@@ -254,7 +260,7 @@ export const processActivityTopic = functions.pubsub
                     }
                     if (!maintenance.isValid) {
                       publishMessage(
-                        JSON.stringify({...maintenance, userMail: activityInfo.userMail}),
+                        JSON.stringify({...maintenance, userName: activityInfo.userName, userEmail: activityInfo.userEmail}),
                         mailsTopic
                       );
                     }
@@ -330,7 +336,7 @@ export const mailTopic = functions.pubsub
         from:'"Manutenções Strava" <esjtechdev@mail.com>',
         to: `${mailInfo.userMail}`,
         subject: "Manutenção Vencida",
-        html: `<p>Olá, ${mailInfo.userMail}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
+        html: `<p>Olá, ${mailInfo.userName}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
       });
   
       console.log(`Message sent ${info.messageId}`);
