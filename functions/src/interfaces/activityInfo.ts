@@ -1,9 +1,10 @@
 export interface ActivityInfo {
     userId: number;
-    userName: string;
-    userEmail: string;
+    userName: String;
+    userEmail: String;
     movingTime: number;
     distance: number;
     equipmentId: number;
     equipmentName: string;
+    userEmailAlerts: Boolean;
 }
