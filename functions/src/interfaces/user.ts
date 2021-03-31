@@ -10,4 +10,5 @@ export interface User {
     expirationDate?: Number;
     refreshToken?: String;
     token?: String;
+    emailAlerts?: Boolean;
 }
