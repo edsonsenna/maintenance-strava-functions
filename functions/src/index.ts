@@ -5,7 +5,7 @@ import * as dotenv from "dotenv";
 import * as nodemailer from "nodemailer";
 import { PubSub } from "@google-cloud/pubsub";
 
-import { Maintenance } from "./maintenance";
+import { Maintenance } from "./interfaces/maintenance";
 import { ActivityInfo } from "./interfaces/activityInfo";
 import { User } from "./interfaces/user";
 
@@ -31,10 +31,13 @@ const mailPassowrd = `${process.env.MAIL_PASSWORD}`;
 
 function publishMessage(message: string, topic: string) {
   const dataBuffer = Buffer.from(message);
+  functions.logger.log(`PublishMessageTopic${topic}`, message);
   pubSubClient
     .topic(topic)
-    .publish(dataBuffer)
-    .catch((error) => console.log(error));
+    .publishMessage({ data: dataBuffer })
+    .catch((error) =>
+      functions.logger.log(`ErrorPublishMessageTopic${topic}`, error)
+    );
 }
 
 function isTokenValid(expiresIn: number) {
@@ -85,7 +88,7 @@ export const activityTopic = functions.pubsub
         .collection(usersCollection)
         .doc(`${userId}`)
         .get()
-        .then((doc): User => (doc.data() ?? {}))
+        .then((doc): User => doc.data() ?? {})
         .catch(() => {
           return {};
         });
@@ -93,7 +96,7 @@ export const activityTopic = functions.pubsub
       if (user) {
         let authToken = user.token;
         const refToken = user.refreshToken;
-        const expiresIn = user.expirationDate
+        const expiresIn = user.expirationDate;
         const userEmail = user.email;
         const userName = user.name;
 
@@ -101,7 +104,7 @@ export const activityTopic = functions.pubsub
         let movingTime = 0;
         let equipmentId = null;
         let equipmentName: string = "";
-        let hasInvalidToken = isTokenValid(Number(expiresIn));
+        const hasInvalidToken = isTokenValid(Number(expiresIn));
 
         if (hasInvalidToken && refToken) {
           authToken = undefined;
@@ -119,16 +122,16 @@ export const activityTopic = functions.pubsub
                 const data = refresh.data;
                 const updatedUser: User = {
                   ...user,
-                  token: data.access_token ?? '',
-                  refreshToken: data.refresh_token ?? '',
-                  expirationDate: data.expires_at ?? '',
+                  token: data.access_token ?? "",
+                  refreshToken: data.refresh_token ?? "",
+                  expirationDate: data.expires_at ?? "",
                 };
-                console.log(updatedUser);
+                functions.logger.log("UpdatingUserToken", updatedUser);
                 await admin
                   .firestore()
                   .collection(usersCollection)
                   .doc(`${userId}`)
-                  .update({...updatedUser});
+                  .update({ ...updatedUser });
                 authToken = updatedUser.token;
               })
               .catch(async (error) => {
@@ -190,10 +193,9 @@ export const activityTopic = functions.pubsub
                   .doc(`${userId}`)
                   .collection(logCollection)
                   .add({
-                    error: `error-${JSON.stringify(error)},`
+                    error: `error-${JSON.stringify(error)},`,
                   });
               });
-
           } catch (error) {
             await admin
               .firestore()
@@ -201,7 +203,7 @@ export const activityTopic = functions.pubsub
               .doc(`${userId}`)
               .collection(logCollection)
               .add({
-                error: `error-${JSON.stringify(error)},`
+                error: `error-${JSON.stringify(error)},`,
               });
           }
         }
@@ -258,9 +260,13 @@ export const processActivityTopic = functions.pubsub
                       maintenance.isValid =
                         maintenance.value < maintenance.goal;
                     }
-                    if (!maintenance.isValid) {
+                    if (!maintenance.isValid && !maintenance.isResolved) {
                       publishMessage(
-                        JSON.stringify({...maintenance, userName: activityInfo.userName, userEmail: activityInfo.userEmail}),
+                        JSON.stringify({
+                          ...maintenance,
+                          userName: activityInfo.userName,
+                          userEmail: activityInfo.userEmail,
+                        }),
                         mailsTopic
                       );
                     }
@@ -316,30 +322,35 @@ export const processActivityTopic = functions.pubsub
 export const mailTopic = functions.pubsub
   .topic(mailsTopic)
   .onPublish(async (message, context) => {
-
     const mailInfo = message.data
       ? JSON.parse(Buffer.from(message.data, "base64").toString())
       : null;
 
-    if(mailInfo?.userMail) {
+    if (mailInfo?.userEmail) {
       const transporter = nodemailer.createTransport({
-        host: 'smtp.gmail.com',
+        host: "smtp.gmail.com",
         port: 587,
         secure: false,
         auth: {
           user: mailAccount,
-          pass: mailPassowrd
+          pass: mailPassowrd,
         },
       });
-  
-      const info = await transporter.sendMail({
-        from:'"Manutenções Strava" <esjtechdev@mail.com>',
-        to: `${mailInfo.userMail}`,
+
+      const emailObject = {
+        from: '"Manutenções Strava" <esjtechdev@mail.com>',
+        to: `${mailInfo.userEmail}`,
         subject: "Manutenção Vencida",
         html: `<p>Olá, ${mailInfo.userName}!</p>\n <p>A manutenção ${mailInfo?.name} - ${mailInfo?.equipmentName} atingiu o limite definido.</p>\n <p>Acesso a sua conta e verifique.</p>`,
-      });
-  
-      console.log(`Message sent ${info.messageId}`);
-    }
+      };
 
+      try {
+        await transporter.sendMail(emailObject);
+        functions.logger.log("SentEmail", emailObject);
+      } catch (error) {
+        functions.logger.log("ErrorSendingEmail", error);
+      }
+    } else {
+      functions.logger.log("ErrorSendingEmail", mailInfo);
+    }
   });
