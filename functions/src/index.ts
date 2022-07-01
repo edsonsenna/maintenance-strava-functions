@@ -15,7 +15,6 @@ admin.initializeApp();
 const pubSubClient = new PubSub();
 const usersCollection = `${process.env.USERS_COLLECTION}`;
 const maintenanceCollection = `${process.env.MAINTENANCES_COLLECTION}`;
-const logCollection = `${process.env.LOGS_COLLECTION}`;
 const stravaClientId = `${process.env.CLIENT_ID}`;
 const stravaClientSecret = `${process.env.CLIENT_SECRET}`;
 const verifyStravaToken = `${process.env.VERIFY_STRAVA_TOKEN}`;
@@ -79,6 +78,8 @@ export const activityTopic = functions.pubsub
       ? JSON.parse(Buffer.from(message.data, "base64").toString())
       : null;
 
+    functions.logger.log(`ActivityInfo`, JSON.stringify(stravaActivity));
+
     if (stravaActivity && stravaActivity.aspect_type === "create") {
       const userId = stravaActivity.owner_id;
       const activityId = stravaActivity.object_id;
@@ -92,6 +93,7 @@ export const activityTopic = functions.pubsub
         .catch(() => {
           return {};
         });
+      functions.logger.log(`ActivityTokenUser`, JSON.stringify(user));
 
       if (user) {
         let authToken = user.token;
@@ -104,9 +106,13 @@ export const activityTopic = functions.pubsub
         let movingTime = 0;
         let equipmentId = null;
         let equipmentName: string = "";
-        const hasInvalidToken = isTokenValid(Number(expiresIn));
+        const hasInvalidToken = !isTokenValid(Number(expiresIn));
 
         if (hasInvalidToken && refToken) {
+          functions.logger.error(
+            `UserWithInvalidToken`,
+            `{ user: ${user.email}, expiresAt: ${user.expirationDate}}`
+          );
           authToken = undefined;
           try {
             const clientId = `client_id=${stravaClientId}`;
@@ -135,24 +141,13 @@ export const activityTopic = functions.pubsub
                 authToken = updatedUser.token;
               })
               .catch(async (error) => {
-                await admin
-                  .firestore()
-                  .collection(usersCollection)
-                  .doc(`${userId}`)
-                  .collection(logCollection)
-                  .add({
-                    error,
-                  });
+                functions.logger.error(
+                  `RefreshTokenError`,
+                  JSON.stringify(error)
+                );
               });
           } catch (error) {
-            await admin
-              .firestore()
-              .collection(usersCollection)
-              .doc(`${userId}`)
-              .collection(logCollection)
-              .add({
-                error,
-              });
+            functions.logger.error(`RefreshTokenError`, JSON.stringify(error));
           }
         }
 
@@ -169,7 +164,7 @@ export const activityTopic = functions.pubsub
               )
               .then(async (response) => {
                 movingTime = response.data.moving_time || null;
-                distance = response.data.distance || null;
+                distance = response.data.gear.distance || null;
                 equipmentId = response.data.gear_id || null;
                 equipmentName = response.data.gear.name || null;
                 const activityObject = {
@@ -187,25 +182,22 @@ export const activityTopic = functions.pubsub
                 );
               })
               .catch(async (error) => {
-                await admin
-                  .firestore()
-                  .collection(usersCollection)
-                  .doc(`${userId}`)
-                  .collection(logCollection)
-                  .add({
-                    error: `error-${JSON.stringify(error)},`,
-                  });
+                functions.logger.error(
+                  `ErrorFetchAtivityInfo-${activityId}`,
+                  error
+                );
               });
           } catch (error) {
-            await admin
-              .firestore()
-              .collection(usersCollection)
-              .doc(`${userId}`)
-              .collection(logCollection)
-              .add({
-                error: `error-${JSON.stringify(error)},`,
-              });
+            functions.logger.error(
+              `ErrorFetchAtivityInfo-${activityId}`,
+              error
+            );
           }
+        } else {
+          functions.logger.error(
+            `UserWithInvalidToken`,
+            `{ user: ${user.email}, authToken: ${authToken}}`
+          );
         }
       }
     }
@@ -249,7 +241,7 @@ export const processActivityTopic = functions.pubsub
                       activityInfo.equipmentName = maintenance.equipmentName;
                     }
                     if (maintenance.type === "distance") {
-                      maintenance.value += activityInfo.distance;
+                      maintenance.value = activityInfo.distance;
                       maintenance.isValid =
                         maintenance.value < maintenance.goal;
                     } else if (maintenance.type === "date") {
@@ -274,16 +266,11 @@ export const processActivityTopic = functions.pubsub
                   }
                 }
               })
-              .catch(
-                async (error) =>
-                  await admin
-                    .firestore()
-                    .collection(usersCollection)
-                    .doc(`${activityInfo.userId}`)
-                    .collection(logCollection)
-                    .add({
-                      error,
-                    })
+              .catch((error) =>
+                functions.logger.error(
+                  `ErrorFetchUserEquipment`,
+                  JSON.stringify(error)
+                )
               );
             if (maintenanceData) {
               batch.update(docRef, {
@@ -293,28 +280,20 @@ export const processActivityTopic = functions.pubsub
               });
             }
           }
-          batch.commit().catch(
-            async (error) =>
-              await admin
-                .firestore()
-                .collection(usersCollection)
-                .doc(`${activityInfo.userId}`)
-                .collection(logCollection)
-                .add({
-                  error,
-                })
-          );
+          batch
+            .commit()
+            .catch((error) =>
+              functions.logger.error(
+                `ErrorUserEquipmentBatchUpdate`,
+                JSON.stringify(error)
+              )
+            );
         })
-        .catch(
-          async (error) =>
-            await admin
-              .firestore()
-              .collection(usersCollection)
-              .doc(`${activityInfo.userId}`)
-              .collection(logCollection)
-              .add({
-                error,
-              })
+        .catch((error) =>
+          functions.logger.error(
+            `ErrorUserEquipmentBatchUpdate`,
+            JSON.stringify(error)
+          )
         );
     }
   });
@@ -348,9 +327,9 @@ export const mailTopic = functions.pubsub
         await transporter.sendMail(emailObject);
         functions.logger.log("SentEmail", emailObject);
       } catch (error) {
-        functions.logger.log("ErrorSendingEmail", error);
+        functions.logger.error("ErrorSendingEmail", JSON.stringify(error));
       }
     } else {
-      functions.logger.log("ErrorSendingEmail", mailInfo);
+      functions.logger.error("ErrorSendingEmail", JSON.stringify(mailInfo));
     }
   });
