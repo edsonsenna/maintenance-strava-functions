@@ -34,7 +34,7 @@ jobs:
         with:
           path: master
       - name: Show folders
-        run: ls -lf
+        run: echo ls -lf
       - name: Go to functions folder
         run: cd ./functions
       - name: Install Dependencies
