@@ -13,6 +13,7 @@ import { User } from "./interfaces/user";
 import * as v2Functions from "./v2/index";
 import publishMessage from "./v2/utils/publishMessage";
 import isTokenValid from "./v2/utils/validateToken";
+import { V2RECEIVED_ACTIVITY_TOPIC } from "./v2/functions/activity";
 
 dotenv.config();
 admin.initializeApp();
@@ -23,6 +24,7 @@ export const V2ReceivedActivity =
   v2Functions.default.ReceivedActivityFunction();
 export const V2ProcessedActivity =
   v2Functions.default.ProcessedActivityFunction();
+export const V2FetchUserEquipments = v2Functions.default.FetchUserEquipments();
 
 // end v2
 
@@ -68,7 +70,10 @@ export const webhook = functions.https.onRequest(async (req, res) => {
     const stravaActivity = req.body;
     if (stravaActivity.aspect_type === "create") {
       publishMessage(JSON.stringify({ ...req.body }), activitiesTopic);
-      publishMessage(JSON.stringify({ ...req.body }), "v2-receive-activity");
+      publishMessage(
+        JSON.stringify({ ...req.body }),
+        V2RECEIVED_ACTIVITY_TOPIC
+      );
     } else {
       functions.logger.log("UpdatedAcitivity", JSON.stringify({ ...req.body }));
     }

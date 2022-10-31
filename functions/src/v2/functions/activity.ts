@@ -7,8 +7,8 @@ import { User } from "../types/user.type";
 import isTokenValid from "../utils/validateToken";
 import publishMessage from "../utils/publishMessage";
 
-const V2COLLECTION = "maintenance-v2";
-const V2RECEIVED_ACTIVITY_TOPIC = "v2-receive-activity";
+export const V2COLLECTION = "maintenance-v2";
+export const V2RECEIVED_ACTIVITY_TOPIC = "v2-receive-activity";
 const V2PROCESSED_ACTIVITY_TOPIC = "v2-processed-activity";
 
 const stravaClientId = `${process.env.CLIENT_ID}`;
