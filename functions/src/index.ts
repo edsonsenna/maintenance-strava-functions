@@ -3,16 +3,32 @@ import * as admin from "firebase-admin";
 import * as axios from "axios";
 import * as dotenv from "dotenv";
 import * as nodemailer from "nodemailer";
-import { PubSub } from "@google-cloud/pubsub";
+
+// import { PubSub } from "@google-cloud/pubsub";
 
 import { Maintenance } from "./interfaces/maintenance";
 import { ActivityInfo } from "./interfaces/activityInfo";
 import { User } from "./interfaces/user";
 
+import * as v2Functions from "./v2/index";
+import publishMessage from "./v2/utils/publishMessage";
+import isTokenValid from "./v2/utils/validateToken";
+import { V2RECEIVED_ACTIVITY_TOPIC } from "./v2/functions/activity";
+
 dotenv.config();
 admin.initializeApp();
 
-const pubSubClient = new PubSub();
+// v2 functions
+
+export const V2ReceivedActivity =
+  v2Functions.default.ReceivedActivityFunction();
+export const V2ProcessedActivity =
+  v2Functions.default.ProcessedActivityFunction();
+export const V2FetchUserEquipments = v2Functions.default.FetchUserEquipments();
+
+// end v2
+
+// const pubSubClient = new PubSub();
 const usersCollection = `${process.env.USERS_COLLECTION}`;
 const maintenanceCollection = `${process.env.MAINTENANCES_COLLECTION}`;
 const stravaClientId = `${process.env.CLIENT_ID}`;
@@ -28,32 +44,38 @@ const mailsTopic = `${process.env.MAILS_TOPIC || "mails-maintenances"}`;
 const mailAccount = `${process.env.MAIL_ACCOUNT}`;
 const mailPassowrd = `${process.env.MAIL_PASSWORD}`;
 
-function publishMessage(message: string, topic: string) {
-  const dataBuffer = Buffer.from(message);
-  functions.logger.log(`PublishMessageTopic${topic}`, message);
-  pubSubClient
-    .topic(topic)
-    .publishMessage({ data: dataBuffer })
-    .catch((error) =>
-      functions.logger.log(`ErrorPublishMessageTopic${topic}`, error)
-    );
-}
+// function publishMessage(message: string, topic: string) {
+//   const dataBuffer = Buffer.from(message);
+//   functions.logger.log(`PublishMessageTopic${topic}`, message);
+//   pubSubClient
+//     .topic(topic)
+//     .publishMessage({ data: dataBuffer })
+//     .catch((error) =>
+//       functions.logger.log(`ErrorPublishMessageTopic${topic}`, error)
+//     );
+// }
 
-function isTokenValid(expiresIn: number) {
-  const expDateMs = expiresIn || null;
-  if (expDateMs) {
-    const expDateString = Number(`${expDateMs}`.padEnd(13, "0"));
-    const expDate = new Date(expDateString);
-    return expDate.getTime() > Date.now();
-  }
-  return false;
-}
+// function isTokenValid(expiresIn: number) {
+//   const expDateMs = expiresIn || null;
+//   if (expDateMs) {
+//     const expDateString = Number(`${expDateMs}`.padEnd(13, "0"));
+//     const expDate = new Date(expDateString);
+//     return expDate.getTime() > Date.now();
+//   }
+//   return false;
+// }
 
 export const webhook = functions.https.onRequest(async (req, res) => {
   if (req.method === "POST") {
     const stravaActivity = req.body;
     if (stravaActivity.aspect_type === "create") {
       publishMessage(JSON.stringify({ ...req.body }), activitiesTopic);
+      publishMessage(
+        JSON.stringify({ ...req.body }),
+        V2RECEIVED_ACTIVITY_TOPIC
+      );
+    } else {
+      functions.logger.log("UpdatedAcitivity", JSON.stringify({ ...req.body }));
     }
     res.status(200).send("EVENT_RECEIVED");
   }
